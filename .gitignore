@@ -13,3 +13,11 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+dist/
+
+# VSCODE
+.metals
+# Don't check in your private connection.properties file.
+connection.properties
+# Don't check in the log files created when running.
+*-testlogfile.log
