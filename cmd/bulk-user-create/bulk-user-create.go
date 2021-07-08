@@ -36,6 +36,12 @@ type cmdLineArgs struct {
 	clientRealm      string
 	destinationRealm string
 	url              string
+	userNameCol      int
+	firstNameCol     int
+	lastNameCol      int
+	passwordCol      int
+	emailCol         int
+	groupId          string
 }
 
 //
@@ -92,11 +98,11 @@ func main() {
 	usersChannel := make(chan []string, cmdArgs.channelBuffer)
 	resultsChannel := make(chan string, cmdArgs.channelBuffer)
 
-	go readUserFile(usersChannel, cmdArgs.userFile)
+	go readUserFile(usersChannel, cmdArgs)
 	go writeLog(resultsChannel)
 
 	for i := 0; i < cmdArgs.threads; i++ {
-		go createUserWorker(i, cmdArgs.clientRealm, cmdArgs.clientId, cmdArgs.clientSecret, cmdArgs.destinationRealm, cmdArgs.url, usersChannel, resultsChannel, &wgReceivers)
+		go createUserWorker(i, cmdArgs.clientRealm, cmdArgs.clientId, cmdArgs.clientSecret, cmdArgs.destinationRealm, cmdArgs.url, cmdArgs.groupId, usersChannel, resultsChannel, &wgReceivers)
 	}
 
 	wgReceivers.Wait()
@@ -108,14 +114,14 @@ func main() {
 
 //
 // reads file and adds data it to the channel
-func readUserFile(jobs chan []string, fileName string) {
-	log.Println("[START]: reading file ", fileName, "*******************************************")
+func readUserFile(jobs chan []string, cmdArgs cmdLineArgs) {
+	log.Println("[START]: reading file ", cmdArgs.userFile, "*******************************************")
 	openedFileOk := false
-	csvfile, err := os.Open(fileName)
+	csvfile, err := os.Open(cmdArgs.userFile)
 
 	if err != nil {
-		fmt.Println("[ERROR] Couldn't open the tsv file [", fileName, "]")
-		log.Fatalln("Couldn't open the tsv file", fileName, err)
+		fmt.Println("[ERROR] Couldn't open the tsv file [", cmdArgs.userFile, "]")
+		log.Fatalln("Couldn't open the tsv file", cmdArgs.userFile, err)
 	} else {
 		openedFileOk = true
 	}
@@ -157,7 +163,7 @@ func writeLog(results chan string) {
 	}
 }
 
-func createUserWorker(id int, realmName string, clientId string, clientSecret string, targetRealm string, url string, jobs <-chan []string, results chan<- string, wg *sync.WaitGroup) {
+func createUserWorker(id int, realmName string, clientId string, clientSecret string, targetRealm string, url string, groupId string, jobs <-chan []string, results chan<- string, wg *sync.WaitGroup) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -166,7 +172,6 @@ func createUserWorker(id int, realmName string, clientId string, clientSecret st
 	}()
 
 	successCounter := 0
-	defaultPassword := "Letmein123"
 	log.Println(id, " Bulk User Tool Starting")
 
 	client := gocloak.NewClient(url)
@@ -205,10 +210,21 @@ func createUserWorker(id int, realmName string, clientId string, clientSecret st
 		}
 		// if it is still ok, then set the password, if it is not ok, then the password creation failed.
 		if ok {
-			err = client.SetPassword(ctx, token.AccessToken, createdUser, targetRealm, defaultPassword, false)
+			err = client.SetPassword(ctx, token.AccessToken, createdUser, targetRealm, channelData[3], false)
 			if err != nil {
 				log.Println(ids, "] SetPassword error: ", err.Error())
 				results <- ids + "] " + channelData[0] + " can't set password" + err.Error()
+			}
+		}
+		// if the user was created, then try to add to group.
+		if ok {
+			// If a group was passed in, then add the user to the group.
+			if groupId != "" {
+				err = client.AddUserToGroup(ctx, token.AccessToken, targetRealm, createdUser, groupId)
+				if err != nil {
+					log.Println(ids, "] AddUserToGroup error: ", err.Error())
+					results <- ids + "] " + channelData[0] + " can't set group" + err.Error()
+				}
 			}
 		}
 		// if we get to the end, and it is still ok, then we assume the user is created
@@ -236,7 +252,7 @@ func processCommandLine() cmdLineArgs {
 	userFile := flag.String("userFile", "example-user-file.tsv", "The file name of a user details file.")
 	processUserFile := flag.Bool("processUserFile", true, "Process user file")
 
-	threads := flag.Int("thread", 10, "the number of threads to run the keycloak import")
+	threads := flag.Int("threads", 10, "the number of threads to run the keycloak import")
 	channelBuffer := flag.Int("channelBuffer", 10000, "the number of buffered spaces in the channel buffer")
 
 	clientId := flag.String("clientId", "admin-cli", "The API user that will execute the calls.")
@@ -245,7 +261,16 @@ func processCommandLine() cmdLineArgs {
 
 	destinationRealm := flag.String("destinationRealm", "delete", "The realm in keycloak where the users are to be created. This may or may not be the same as the `clientRealm`")
 
-	url := flag.String("url", "http://localhost:8080/", "The URL of the keycloak server.")
+	url := flag.String("url", "http://127.0.0.1:8080/", "The URL of the keycloak server.")
+
+	groupId := flag.String("forceGroup", "", "Add all users for this import to this group")
+
+	// Column Definitions
+	userNameCol := flag.Int("userNameCol", 0, "The column number containing the username value")
+	firstNameCol := flag.Int("firstNameCol", 1, "The column number containing the first name value")
+	lastNameCol := flag.Int("lastNameCol", 2, "The column number containing the last name value")
+	passwordCol := flag.Int("passwordCol", 3, "The column number containing the password value")
+	emailCol := flag.Int("emailCol", 4, "The column number containing the email value")
 
 	flag.Parse()
 
@@ -256,7 +281,8 @@ func processCommandLine() cmdLineArgs {
 		os.Exit(1)
 	}
 	return cmdLineArgs{userFile: *userFile, processUserFile: *processUserFile, channelBuffer: *channelBuffer,
-		clientId: *clientId, clientSecret: *clientSecret, clientRealm: *clientRealm, destinationRealm: *destinationRealm, url: *url, threads: *threads}
+		clientId: *clientId, clientSecret: *clientSecret, clientRealm: *clientRealm, destinationRealm: *destinationRealm, url: *url, threads: *threads,
+		userNameCol: *userNameCol, firstNameCol: *firstNameCol, lastNameCol: *lastNameCol, passwordCol: *passwordCol, emailCol: *emailCol, groupId: *groupId}
 }
 
 // Print the command line arguments on the screen.
@@ -271,6 +297,7 @@ func printCmdLineArgs(cLA cmdLineArgs) {
 	fmt.Println("destinationRealm", cLA.destinationRealm)
 	fmt.Println("url", cLA.url)
 	fmt.Println("threads:", cLA.threads)
+	fmt.Println("group:", cLA.groupId)
 }
 
 // Send the command line arguments to the log file
@@ -284,6 +311,8 @@ func logCmdLineArgs(cLA cmdLineArgs) {
 	log.Println("destinationRealm", cLA.destinationRealm)
 	log.Println("url", cLA.url)
 	log.Println("threads:", cLA.threads)
+	log.Println("group:", cLA.groupId)
+
 }
 
 func testColour() {
@@ -296,20 +325,3 @@ func testColour() {
 	fmt.Println(string(colorCyan), "test", string(colorReset))
 	fmt.Println("next")
 }
-
-//user := gocloak.User{
-//	FirstName: gocloak.StringP(channelData[1]),
-//	LastName:  gocloak.StringP(channelData[2]),
-//	Email:     gocloak.StringP(channelData[7]),
-//	Enabled:   gocloak.BoolP(true),
-//	Username:  gocloak.StringP(channelData[0])}
-
-//func readPropertiesFile() {
-//	p, err := Load([]byte("key=value\nkey2=${key}"), ISO_8859_1)
-//	if err != nil {
-//		log.Fatal(err)
-//	}
-//	// Dump the expanded key/value pairs of the Properties
-//	fmt.Println("Expanded key/value pairs")
-//	fmt.Println(p)
-//}
